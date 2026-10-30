@@ -8,10 +8,7 @@ import hashlib
 from datetime import datetime
 
 DB_PATH = "exam_portal.db"
-try:
-    ADMIN_PASSWORD = st.secrets["ADMIN_PASSWORD"]
-except Exception:
-    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-this-password")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "change-this-password")
 QUESTION_COLUMNS = ["chapter", "question", "option_a", "option_b", "option_c", "option_d", "answer", "explanation"]
 
 st.set_page_config(page_title="Class XI CS Exam Portal", page_icon="💻", layout="wide")
@@ -40,19 +37,6 @@ def init_db():
             total INTEGER NOT NULL,
             submitted_at TEXT NOT NULL
         )""")
-        # Seed the included textbook MCQs once, when the questions table is empty.
-        existing = con.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
-        bank_path = os.path.join(os.path.dirname(__file__), "question_bank.csv")
-        if existing == 0 and os.path.exists(bank_path):
-            bank = pd.read_csv(bank_path).fillna("")
-            missing = [c for c in QUESTION_COLUMNS if c not in bank.columns]
-            if not missing:
-                bank = bank[QUESTION_COLUMNS]
-                for _, row in bank.iterrows():
-                    con.execute("""INSERT INTO questions
-                        (chapter, question, option_a, option_b, option_c, option_d, answer, explanation)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                        tuple(str(row[c]).strip() for c in QUESTION_COLUMNS))
 
 def load_questions(chapter=None):
     with get_conn() as con:
@@ -121,14 +105,20 @@ with tab_test:
             chapters = ["All available chapters"] + sorted(all_q["chapter"].dropna().unique().tolist())
             chapter = st.selectbox("Choose chapter", chapters)
             available = len(all_q) if chapter == "All available chapters" else len(all_q[all_q["chapter"] == chapter])
+            question_count = min(25, available)
+            test_minutes = question_count
             st.write(f"Questions available: **{available}**")
-            st.write("Test format: 25 questions • 25 marks • 25 minutes")
-            if available < 25:
-                st.warning("At least 25 questions are needed in the selected chapter/selection. Ask the admin to upload more.")
-            if st.button("Start Test", type="primary", disabled=(not name.strip() or available < 25)):
+            st.write(f"Test format: **{question_count} questions • {question_count} marks • {test_minutes} minutes**")
+            if available < 25 and chapter == "All available chapters":
+                st.info(f"There are {available} questions in total, so this test will use all {available} questions.")
+            elif available < 25:
+                st.info(f"This chapter has {available} questions. You can take a chapter-wise test with all {available} questions.")
+            if st.button("Start Test", type="primary", disabled=(not name.strip() or available == 0)):
                 pool = all_q if chapter == "All available chapters" else all_q[all_q["chapter"] == chapter]
-                chosen = pool.sample(n=25, replace=False, random_state=random.randint(0, 999999)).reset_index(drop=True)
+                chosen = pool.sample(n=question_count, replace=False, random_state=random.randint(0, 999999)).reset_index(drop=True)
                 st.session_state.exam_df = chosen
+                st.session_state.exam_total = question_count
+                st.session_state.exam_duration_seconds = test_minutes * 60
                 st.session_state.student_name = name.strip()
                 st.session_state.exam_chapter = chapter
                 st.session_state.exam_started = True
@@ -139,7 +129,9 @@ with tab_test:
         st_autorefresh(interval=1000, key="exam_countdown_refresh")
         df = st.session_state.exam_df
         elapsed = int(datetime.now().timestamp() - st.session_state.exam_start_time)
-        remaining = max(0, 25 * 60 - elapsed)
+        exam_total = int(st.session_state.get("exam_total", len(df)))
+        duration_seconds = int(st.session_state.get("exam_duration_seconds", exam_total * 60))
+        remaining = max(0, duration_seconds - elapsed)
         st.subheader(f"Welcome, {st.session_state.student_name}")
         st.write(f"Chapter selection: **{st.session_state.exam_chapter}**")
         mins, secs = divmod(remaining, 60)
@@ -175,7 +167,7 @@ with tab_test:
                     "Result": "Correct" if selected == correct else "Incorrect",
                     "Explanation": row["explanation"]
                 })
-            save_result(st.session_state.student_name, st.session_state.exam_chapter, score, 25)
+            save_result(st.session_state.student_name, st.session_state.exam_chapter, score, exam_total)
             st.session_state.exam_score = score
             st.session_state.exam_review = review
             st.session_state.exam_submitted = True
@@ -185,9 +177,10 @@ with tab_test:
     if st.session_state.get("exam_submitted"):
         score = st.session_state.exam_score
         st.subheader("🎉 Test completed!")
-        st.metric("Your score", f"{score} / 25")
-        st.progress(score / 25)
-        st.write(f"Correct: **{score}** · Incorrect or unanswered: **{25-score}**")
+        exam_total = int(st.session_state.get("exam_total", 25))
+        st.metric("Your score", f"{score} / {exam_total}")
+        st.progress(score / exam_total if exam_total else 0)
+        st.write(f"Correct: **{score}** · Incorrect or unanswered: **{exam_total-score}**")
         if score >= 20:
             st.success("Excellent work!")
         elif score >= 12:
@@ -252,4 +245,4 @@ with tab_admin:
             st.rerun()
 
 st.divider()
-st.caption("Practice responsibly • One mark for each correct answer • No negative marking")
+st.caption("Practice responsibly • One mark for each correct answer • N
